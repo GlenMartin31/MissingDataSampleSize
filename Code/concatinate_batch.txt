@@ -1,0 +1,8 @@
+#!/bin/bash --login
+#SBATCH -p himem
+#SBATCH --mem=2000G
+#SBATCH -t 7-0
+
+module load apps/gcc/R/4.5.0
+
+Rscript concatinate_results.R

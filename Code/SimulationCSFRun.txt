@@ -1,0 +1,9 @@
+#!/bin/bash --login
+#SBATCH -p himem
+#SBATCH -t 7-0
+
+#SBATCH -a 1-480
+
+module load apps/gcc/R/4.5.0
+
+Rscript 01_SimulationRun.R ${SLURM_ARRAY_TASK_ID}
