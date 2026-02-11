@@ -7,7 +7,6 @@
 # Prediction Models
 # Authors:
 #   Glen P. Martin
-#   Matthew Sperrin
 #   Richard D. Riley
 
 # ##############################################################################
@@ -28,7 +27,7 @@ sims_parameters <- tidyr::crossing(
   beta_X = list(c(0.5, 0, 0.3, 0, 0.5, 0, 0.3, 0, 0.1, 0),
                 c(0.5, 0.2, 0.3, 0.1, 0.5, 0.2, 0.3, 0.05, 0.1, 0.15)),
   rho_X = c(0, 0.5, 0.75),
-  Prev_Y = c(0.2, 0.5),
+  Prev_Y = c(0.2),
   prop_missing = c(0.1, 0.2, 0.4, 0.6),
   missing_mech = c("MAR", "MNAR"),
   multipliers = c(1, 1.25, 1.5, 1.75, 2)
@@ -48,7 +47,7 @@ if(taskid == 1) {
             file = "./sims_parameters.RDS")
 }
 
-sim_results <- simulation_nrun_fnc(n_iter = 200,
+sim_results <- simulation_nrun_fnc(n_iter = 100,
                                    P = sims_parameters$P[taskid],
                                    beta_X = sims_parameters$beta_X[[taskid]],
                                    rho_X = sims_parameters$rho_X[taskid],

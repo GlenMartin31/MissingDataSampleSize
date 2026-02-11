@@ -19,7 +19,7 @@ prediction_results <- purrr::map_dfr(results_files,
 model_coefs <- purrr::map_dfr(results_files,
                               ~dplyr::bind_rows(.x$model_coefs),
                               .id = "Scenario") %>%
-  dplyr::group_by(Scenario, Model, Variable) %>%
+  dplyr::group_by(Scenario, ModellingMethod, Variable) %>%
   dplyr::summarise(dplyr::across(CCA:FullyObserved,
                                  list("Mean" = ~mean(.),
                                       "SD" = ~sqrt(var(.)),
@@ -30,8 +30,8 @@ model_coefs <- purrr::map_dfr(results_files,
 EVPI <- purrr::map_dfr(results_files,
                        ~dplyr::bind_rows(.x$EVPI),
                        .id = "Scenario") %>%
-  dplyr::group_by(Scenario, Model, Z) %>%
-  dplyr::summarise(dplyr::across(EVPI_NB_model_CCA:EVPI_NB_model_FullyObserved,
+  dplyr::group_by(Scenario, IPDImputationMethod, DevelopmentImputationMethod, Z) %>%
+  dplyr::summarise(dplyr::across(EVPI_logistic:REVPI_lasso,
                                  list("Mean" = ~mean(.),
                                       "SD" = ~sqrt(var(.)),
                                       "Min" = ~min(.),

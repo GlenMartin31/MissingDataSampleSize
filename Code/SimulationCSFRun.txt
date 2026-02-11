@@ -1,8 +1,9 @@
 #!/bin/bash --login
 #SBATCH -p himem
+#SBATCH --mem=1000G
 #SBATCH -t 7-0
 
-#SBATCH -a 1-480
+#SBATCH -a 1-240
 
 module load apps/gcc/R/4.5.0
 

@@ -7,7 +7,6 @@
 # Prediction Models
 # Authors:
 #   Glen P. Martin
-#   Matthew Sperrin
 #   Richard D. Riley
 
 # ##############################################################################
@@ -39,6 +38,7 @@ simulation_nrun_fnc <- function(n_iter,
   library(pROC)
   library(pmsampsize)
   library(missForestPredict)
+  library(predRupdate)
   
   missing_mech <- as.character(match.arg(missing_mech))
   
@@ -67,6 +67,10 @@ simulation_nrun_fnc <- function(n_iter,
   true_model_performance <- predRupdate::pred_val_probs(binary_outcome = IPD$Y,
                                                         Prob = IPD$True_Pi,
                                                         cal_plot = FALSE)
+  #note: this is also equivalent to the performance of the DGM on imputed
+  #versions of the target population (regardless of missingness pattern or
+  #imputation approach) because the 'true' risks wouldnt change and we dont
+  #consider missing outcomes here
   
   ##############################################################################
   ##### Calculate the minimum required sample size for developing a CPM within
@@ -97,8 +101,15 @@ simulation_nrun_fnc <- function(n_iter,
                                            nrow = length(IPD$True_Pi), 
                                            ncol = length(z)))*NB_z)
   for(iter in 1:n_iter) {
+    # Generate a fully observed development cohort using the same DGM
+    fully_observed_dev_data <- data_generating_fnc(P = P,
+                                                   N = N_dev,
+                                                   beta_X = beta_X,
+                                                   rho_X = rho_X,
+                                                   Prev_Y = Prev_Y)
+    #run the simulation for this iteration:
     iteration_results <- simulation_singlerun_fnc(IPD = IPD,
-                                                  N_dev = N_dev,
+                                                  fully_observed_dev_data = fully_observed_dev_data,
                                                   P = P,
                                                   prop_missing = prop_missing,
                                                   missing_mech = missing_mech,
@@ -108,20 +119,19 @@ simulation_nrun_fnc <- function(n_iter,
                                                   NB_all = NB_all,
                                                   NB_max = NB_max)
     
+    #store the results from this iteration:
     prediction_results <- prediction_results %>% 
       dplyr::bind_rows(iteration_results$predictive_performance %>%
                          dplyr::mutate("iter" = iter,
-                                       .before = "Model"))
-    
+                                       .before = "ModellingMethod"))
     model_coefs <- model_coefs %>%
       dplyr::bind_rows(iteration_results$model_coef_mat %>%
                          dplyr::mutate("iter" = iter,
-                                       .before = "Model"))
-    
+                                       .before = "Variable"))
     EVPI <- EVPI %>%
       dplyr::bind_rows(iteration_results$EVPI %>%
                          dplyr::mutate("iter" = iter,
-                                       .before = "Model"))
+                                       .before = "IPDImputationMethod"))
   }
   
   return(list("True_mod_perfm" = data.frame("OE" = true_model_performance$OE_ratio,
@@ -139,7 +149,7 @@ simulation_nrun_fnc <- function(n_iter,
 ## Function that runs a single run of the simulation
 ####----------------------------------------------------------------------------
 simulation_singlerun_fnc <- function(IPD,
-                                     N_dev,
+                                     fully_observed_dev_data,
                                      P,
                                      prop_missing,
                                      missing_mech,
@@ -150,22 +160,30 @@ simulation_singlerun_fnc <- function(IPD,
                                      NB_max) {
   
   ##############################################################################
-  ##### Sample a fully observed development cohort from the IPD
-  ##############################################################################
-  fully_observed_dev_data <- IPD %>%
-    dplyr::slice_sample(n = N_dev, replace = FALSE) %>%
-    dplyr::arrange(ID)
-  
-  ##############################################################################
-  ##### Create a version of the development data with missingness amputed
+  ##### Ampute missing data into the target population data (IPD)
   ##############################################################################
   miss_patterns <- expand.grid(rep(list(0:1), P))
   miss_patterns <- miss_patterns[-c(1,nrow(miss_patterns)),]
-  #given the sizes of the development data, we dont want all possible 
-  #combinations of missingness patterns, so randomly sample 100 of them in 
-  #each iteration:
+  #we dont want all possible combinations of missingness patterns (not realistic), 
+  #so randomly sample 100 of them in each iteration:
   miss_patterns <- miss_patterns %>% 
     dplyr::slice_sample(n = 100) 
+  
+  amp <- mice::ampute(data = IPD %>%
+                        dplyr::select(starts_with("X")),
+                      prop = prop_missing,
+                      mech = missing_mech,
+                      patterns = miss_patterns)
+  
+  IPD_with_missing <- dplyr::bind_cols("ID" = IPD$ID,
+                                       amp$amp,
+                                       "True_Pi" = IPD$True_Pi,
+                                       "Y" = IPD$Y)
+  rm(amp)
+  
+  ##############################################################################
+  ##### Ampute missing data into the development dataset
+  ##############################################################################
   amp <- mice::ampute(data = fully_observed_dev_data %>%
                         dplyr::select(starts_with("X")),
                       prop = prop_missing,
@@ -176,167 +194,267 @@ simulation_singlerun_fnc <- function(IPD,
                                amp$amp,
                                "True_Pi" = fully_observed_dev_data$True_Pi,
                                "Y" = fully_observed_dev_data$Y)
-  
+  rm(amp)
   
   ##############################################################################
-  ##### Impute the dev_data using different imputation strategies
+  ##### Impute the dev_data using different imputation strategies, and 
+  ##### transport these imputation models to apply to impute IPD_with_missing
   ##############################################################################
-  imputed_dfs <- imputation_fnc(df = dev_data)
+  imputation_objects <- imputation_fnc(df = dev_data)
+  
+  imputed_dev_data <- list("CCA" = imputation_objects$CCA,
+                           "MeanImpute" = imputation_objects$MeanImpute,
+                           "RI" = imputation_objects$RI,
+                           "MI" = imputation_objects$MI,
+                           "RF" = imputation_objects$RF)
+  
+  #apply the learned imputation models onto the target population:
+  imputed_IPD_data <- list(
+    "MeanImpute" = IPD_with_missing %>%
+      dplyr::mutate(dplyr::across(.cols = tidyr::starts_with("X"),
+                                  .fns = ~ifelse(is.na(.), mean(., na.rm = T), .))),
+    "RI" = mice::complete(mice::mice.mids(imputation_objects$RI_impmodels, 
+                                          newdata = IPD_with_missing,
+                                          print = F)),
+    "MI" = mice::mice.mids(imputation_objects$MI, 
+                           newdata = IPD_with_missing,
+                           print = F),
+    "RF" = missForestPredict::missForestPredict(imputation_objects$RF_impmodels,
+                                                newdata = IPD_with_missing)
+  )
   
   ##############################################################################
   ##### Fit the CPMs under MLE, AIC and LASSO likelihoods to each imputed 
   ##### version of the development dataset, and the fully observed version
   ##############################################################################
-  logistic_models <- lapply(imputed_dfs, model_fit_fnc, 
-                            P = P,
-                            model_type = "logistic")
-  logistic_models$FullyObserved <- model_fit_fnc(df = fully_observed_dev_data,
-                                                     P = P,
-                                                     model_type = "logistic")
-  
-  AIC_models <- lapply(imputed_dfs, model_fit_fnc, 
-                       P = P,
-                       model_type = "AIC")
-  AIC_models$FullyObserved <- model_fit_fnc(df = fully_observed_dev_data,
-                                            P = P,
-                                            model_type = "AIC")
-  
-  lasso_models <- lapply(imputed_dfs, model_fit_fnc, 
-                         P = P,
-                         model_type = "lasso")
-  lasso_models$FullyObserved <- model_fit_fnc(df = fully_observed_dev_data,
-                                                  P = P,
-                                                  model_type = "lasso")
+  fitted_models <- purrr::set_names(c("logistic", "AIC", "lasso")) %>%
+    purrr::map(.x = .,
+               .f = function(X) {
+                 model_fit <- lapply(imputed_dev_data, 
+                                     model_fit_fnc, 
+                                     P = P,
+                                     model_type = X)
+                 model_fit$FullyObserved <- model_fit_fnc(df = fully_observed_dev_data,
+                                                          P = P,
+                                                          model_type = X)
+                 model_fit
+                 }) %>% 
+    purrr::list_flatten()
   
   ## Extract the coefficients of each model
-  logistic_coefs_mat <- dplyr::bind_rows(logistic_models, .id = "imputation") %>% 
-    tidyr::pivot_wider(id_cols = "Variable", 
-                       names_from = "imputation", values_from = "Estimate")
-  AIC_coefs_mat <- dplyr::bind_rows(AIC_models, .id = "imputation") %>% 
-    tidyr::pivot_wider(id_cols = "Variable", 
-                       names_from = "imputation", values_from = "Estimate")
-  lasso_coefs_mat <- dplyr::bind_rows(lasso_models, .id = "imputation") %>% 
-    tidyr::pivot_wider(id_cols = "Variable", 
-                       names_from = "imputation", values_from = "Estimate")
+  model_coef_mat <- fitted_models %>% 
+    dplyr::bind_rows(.id = "imputation") %>% 
+    tidyr::separate_wider_delim(cols = "imputation",
+                                delim = "_",
+                                names = c("ModellingMethod", "imputation")) %>%
+    tidyr::pivot_wider(id_cols = c("Variable", "ModellingMethod"), 
+                       names_from = c("imputation"), 
+                       values_from = "Estimate") 
   
   
   ##############################################################################
-  ##### Apply every developed CPM to make predictions for each individual in 
-  ##### the target population dataset
+  ##### Quantify every CPM's predictive performance, EVPI and degradation in
+  ##### the target population dataset (both fully observed and imputed versions)
   ##############################################################################
-  IPD_logistic_predictions <- data.frame(sapply(logistic_models, 
-                                                expit_fnc, df = IPD))
-  IPD_AIC_predictions <- data.frame(sapply(AIC_models, 
-                                           expit_fnc, df = IPD))
-  IPD_lasso_predictions <- data.frame(sapply(lasso_models, 
-                                             expit_fnc, df = IPD))
+  FullyObervedIPD_Performance <- purrr::map(.x = fitted_models,
+                                            .f = predictive_performance_fnc,
+                                            df = IPD,
+                                            true_model_performance = true_model_performance,
+                                            z = z,
+                                            NB_z = NB_z,
+                                            NB_all = NB_all,
+                                            NB_max = NB_max)
+  
+  MeanImputeIPD_Performance <- purrr::map(.x = fitted_models[c("logistic_MeanImpute",
+                                                               "AIC_MeanImpute",
+                                                               "lasso_MeanImpute")],
+                                          .f = predictive_performance_fnc,
+                                          df = imputed_IPD_data$MeanImpute,
+                                          true_model_performance = true_model_performance,
+                                          z = z,
+                                          NB_z = NB_z,
+                                          NB_all = NB_all,
+                                          NB_max = NB_max)
+  
+  RIIPD_Performance <- purrr::map(.x = fitted_models[c("logistic_RI",
+                                                       "AIC_RI",
+                                                       "lasso_RI")],
+                                  .f = predictive_performance_fnc,
+                                  df = imputed_IPD_data$RI,
+                                  true_model_performance = true_model_performance,
+                                  z = z,
+                                  NB_z = NB_z,
+                                  NB_all = NB_all,
+                                  NB_max = NB_max)
+  
+  MIIPD_Performance <- purrr::map(.x = fitted_models[c("logistic_MI",
+                                                       "AIC_MI",
+                                                       "lasso_MI")],
+                                  .f = predictive_performance_fnc,
+                                  df = imputed_IPD_data$MI,
+                                  true_model_performance = true_model_performance,
+                                  z = z,
+                                  NB_z = NB_z,
+                                  NB_all = NB_all,
+                                  NB_max = NB_max)
+  
+  RFIPD_Performance <- purrr::map(.x = fitted_models[c("logistic_RF",
+                                                       "AIC_RF",
+                                                       "lasso_RF")],
+                                  .f = predictive_performance_fnc,
+                                  df = imputed_IPD_data$RF,
+                                  true_model_performance = true_model_performance,
+                                  z = z,
+                                  NB_z = NB_z,
+                                  NB_all = NB_all,
+                                  NB_max = NB_max)
   
   ##############################################################################
-  ##### Quantify every CPM's predictive performance and degradation in
-  ##### the target population dataset
+  ##### Extract and data wrangle the results ready for function return
   ##############################################################################
-  predictive_performance <- apply(IPD_logistic_predictions, 2, 
-                                  performance_fnc, 
-                                  outcome = IPD$Y,
-                                  true_model_performance = true_model_performance) %>%
-    dplyr::bind_rows(.id = "Imputation") %>%
-    dplyr::mutate("Model" = "Logistic",
-                  .before = "Imputation") %>%
-    dplyr::bind_rows(dplyr::bind_rows(apply(IPD_AIC_predictions, 2, 
-                                            performance_fnc, 
-                                            outcome = IPD$Y,
-                                            true_model_performance = true_model_performance),
-                                      .id = "Imputation") %>%
-                       dplyr::mutate("Model" = "AIC",
-                                     .before = "Imputation")) %>%
-    dplyr::bind_rows(dplyr::bind_rows(apply(IPD_lasso_predictions, 2, 
-                                            performance_fnc, 
-                                            outcome = IPD$Y,
-                                            true_model_performance = true_model_performance),
-                                      .id = "Imputation") %>%
-                       dplyr::mutate("Model" = "LASSO",
-                                     .before = "Imputation"))
+  predictive_performance <- lapply(FullyObervedIPD_Performance, 
+                                   function(X)X["performance"]) %>% 
+    purrr::list_flatten() %>% 
+    dplyr::bind_rows(.id = "Model_DevelopmentImputationMethod_Metric") %>%
+    tidyr::separate_wider_delim(cols = "Model_DevelopmentImputationMethod_Metric",
+                                delim = "_",
+                                names = c("ModellingMethod", 
+                                          "DevelopmentImputationMethod",
+                                          "Metric")) %>%
+    dplyr::select(-Metric) %>%
+    dplyr::mutate("IPDImputationMethod" = "FullyObserved",
+                  .after = "DevelopmentImputationMethod") %>%
+    dplyr::bind_rows(lapply(MeanImputeIPD_Performance, 
+                            function(X)X["performance"]) %>% 
+                       purrr::list_flatten() %>% 
+                       dplyr::bind_rows(.id = "Model_DevelopmentImputationMethod_Metric") %>%
+                       tidyr::separate_wider_delim(cols = "Model_DevelopmentImputationMethod_Metric",
+                                                   delim = "_",
+                                                   names = c("ModellingMethod", 
+                                                             "DevelopmentImputationMethod",
+                                                             "Metric")) %>%
+                       dplyr::select(-Metric) %>%
+                       dplyr::mutate("IPDImputationMethod" = "MeanImpute",
+                                     .after = "DevelopmentImputationMethod")) %>%
+    dplyr::bind_rows(lapply(RIIPD_Performance, 
+                            function(X)X["performance"]) %>% 
+                       purrr::list_flatten() %>% 
+                       dplyr::bind_rows(.id = "Model_DevelopmentImputationMethod_Metric") %>%
+                       tidyr::separate_wider_delim(cols = "Model_DevelopmentImputationMethod_Metric",
+                                                   delim = "_",
+                                                   names = c("ModellingMethod", 
+                                                             "DevelopmentImputationMethod",
+                                                             "Metric")) %>%
+                       dplyr::select(-Metric) %>%
+                       dplyr::mutate("IPDImputationMethod" = "RI",
+                                     .after = "DevelopmentImputationMethod")) %>%
+    dplyr::bind_rows(lapply(MIIPD_Performance, 
+                            function(X)X["performance"]) %>% 
+                       purrr::list_flatten() %>% 
+                       dplyr::bind_rows(.id = "Model_DevelopmentImputationMethod_Metric") %>%
+                       tidyr::separate_wider_delim(cols = "Model_DevelopmentImputationMethod_Metric",
+                                                   delim = "_",
+                                                   names = c("ModellingMethod", 
+                                                             "DevelopmentImputationMethod",
+                                                             "Metric")) %>%
+                       dplyr::select(-Metric) %>%
+                       dplyr::mutate("IPDImputationMethod" = "MI",
+                                     .after = "DevelopmentImputationMethod")) %>%
+    dplyr::bind_rows(lapply(RFIPD_Performance, 
+                            function(X)X["performance"]) %>% 
+                       purrr::list_flatten() %>% 
+                       dplyr::bind_rows(.id = "Model_DevelopmentImputationMethod_Metric") %>%
+                       tidyr::separate_wider_delim(cols = "Model_DevelopmentImputationMethod_Metric",
+                                                   delim = "_",
+                                                   names = c("ModellingMethod", 
+                                                             "DevelopmentImputationMethod",
+                                                             "Metric")) %>%
+                       dplyr::select(-Metric) %>%
+                       dplyr::mutate("IPDImputationMethod" = "RF",
+                                     .after = "DevelopmentImputationMethod"))
+  
+  
+  
+  EVPI <- lapply(FullyObervedIPD_Performance, 
+         function(X)X["EVPI"]) %>% 
+    purrr::list_flatten() %>% 
+    dplyr::bind_rows(.id = "Model_DevelopmentImputationMethod_Metric") %>%
+    tidyr::separate_wider_delim(cols = "Model_DevelopmentImputationMethod_Metric",
+                                delim = "_",
+                                names = c("ModellingMethod", 
+                                          "DevelopmentImputationMethod",
+                                          "Metric")) %>%
+    dplyr::select(-Metric) %>%
+    dplyr::mutate("IPDImputationMethod" = "FullyObserved",
+                  .after = "DevelopmentImputationMethod") %>%
+    pivot_wider(id_cols = c("DevelopmentImputationMethod", "IPDImputationMethod", "Z"),
+                names_from = c("ModellingMethod"),
+                values_from = c("EVPI", "REVPI")) %>%
+    dplyr::bind_rows(lapply(MeanImputeIPD_Performance, 
+                            function(X)X["EVPI"]) %>% 
+                       purrr::list_flatten() %>% 
+                       dplyr::bind_rows(.id = "Model_DevelopmentImputationMethod_Metric") %>%
+                       tidyr::separate_wider_delim(cols = "Model_DevelopmentImputationMethod_Metric",
+                                                   delim = "_",
+                                                   names = c("ModellingMethod", 
+                                                             "DevelopmentImputationMethod",
+                                                             "Metric")) %>%
+                       dplyr::select(-Metric) %>%
+                       dplyr::mutate("IPDImputationMethod" = "MeanImpute",
+                                     .after = "DevelopmentImputationMethod") %>%
+                       pivot_wider(id_cols = c("DevelopmentImputationMethod", "IPDImputationMethod", "Z"),
+                                   names_from = c("ModellingMethod"),
+                                   values_from = c("EVPI", "REVPI"))) %>%
+    dplyr::bind_rows(lapply(RIIPD_Performance, 
+                            function(X)X["EVPI"]) %>% 
+                       purrr::list_flatten() %>% 
+                       dplyr::bind_rows(.id = "Model_DevelopmentImputationMethod_Metric") %>%
+                       tidyr::separate_wider_delim(cols = "Model_DevelopmentImputationMethod_Metric",
+                                                   delim = "_",
+                                                   names = c("ModellingMethod", 
+                                                             "DevelopmentImputationMethod",
+                                                             "Metric")) %>%
+                       dplyr::select(-Metric) %>%
+                       dplyr::mutate("IPDImputationMethod" = "RI",
+                                     .after = "DevelopmentImputationMethod") %>%
+                       pivot_wider(id_cols = c("DevelopmentImputationMethod", "IPDImputationMethod", "Z"),
+                                   names_from = c("ModellingMethod"),
+                                   values_from = c("EVPI", "REVPI"))) %>%
+    dplyr::bind_rows(lapply(MIIPD_Performance, 
+                            function(X)X["EVPI"]) %>% 
+                       purrr::list_flatten() %>% 
+                       dplyr::bind_rows(.id = "Model_DevelopmentImputationMethod_Metric") %>%
+                       tidyr::separate_wider_delim(cols = "Model_DevelopmentImputationMethod_Metric",
+                                                   delim = "_",
+                                                   names = c("ModellingMethod", 
+                                                             "DevelopmentImputationMethod",
+                                                             "Metric")) %>%
+                       dplyr::select(-Metric) %>%
+                       dplyr::mutate("IPDImputationMethod" = "MI",
+                                     .after = "DevelopmentImputationMethod") %>%
+                       pivot_wider(id_cols = c("DevelopmentImputationMethod", "IPDImputationMethod", "Z"),
+                                   names_from = c("ModellingMethod"),
+                                   values_from = c("EVPI", "REVPI"))) %>%
+    dplyr::bind_rows(lapply(RFIPD_Performance, 
+                            function(X)X["EVPI"]) %>% 
+                       purrr::list_flatten() %>% 
+                       dplyr::bind_rows(.id = "Model_DevelopmentImputationMethod_Metric") %>%
+                       tidyr::separate_wider_delim(cols = "Model_DevelopmentImputationMethod_Metric",
+                                                   delim = "_",
+                                                   names = c("ModellingMethod", 
+                                                             "DevelopmentImputationMethod",
+                                                             "Metric")) %>%
+                       dplyr::select(-Metric) %>%
+                       dplyr::mutate("IPDImputationMethod" = "RF",
+                                     .after = "DevelopmentImputationMethod") %>%
+                       pivot_wider(id_cols = c("DevelopmentImputationMethod", "IPDImputationMethod", "Z"),
+                                   names_from = c("ModellingMethod"),
+                                   values_from = c("EVPI", "REVPI")))
+  
   
   ##############################################################################
-  ##### Expected Value of Perfect Information calculations
+  ##### Function return
   ##############################################################################
-  NB_models_logistic <- apply(IPD_logistic_predictions, 2, 
-                              function(X) {
-                                colMeans((X > matrix(rep(z, each = length(X)),
-                                                     nrow = length(X), 
-                                                     ncol = length(z)))*NB_z)
-                                })
-  colnames(NB_models_logistic) <- paste("NB_model_", colnames(NB_models_logistic),
-                                        sep = "")
-  NB_logistic <- dplyr::bind_cols(NB_models_logistic,
-                                  "NB_max" = NB_max,
-                                  "NB_all" = NB_all,
-                                  "Z" = z) %>%
-    dplyr::mutate(dplyr::across(starts_with("NB_model"),
-                                function(X){NB_max-pmax(0,X,NB_all)},
-                                .names = "{paste('EVPI_', col, sep = '')}"),
-                  "Z" = Z,
-                  .keep = "none")
-  
-  NB_models_AIC <- apply(IPD_AIC_predictions, 2, 
-                         function(X) {
-                           colMeans((X > matrix(rep(z, each = length(X)),
-                                                nrow = length(X), 
-                                                ncol = length(z)))*NB_z)
-                         })
-  colnames(NB_models_logistic) <- paste("NB_model_", colnames(NB_models_AIC),
-                                        sep = "")
-  NB_AIC <- dplyr::bind_cols(NB_models_logistic,
-                             "NB_max" = NB_max,
-                             "NB_all" = NB_all,
-                             "Z" = z) %>%
-    dplyr::mutate(dplyr::across(starts_with("NB_model"),
-                                function(X){NB_max-pmax(0,X,NB_all)},
-                                .names = "{paste('EVPI_', col, sep = '')}"),
-                  "Z" = Z,
-                  .keep = "none")
-  
-  NB_models_lasso <- apply(IPD_lasso_predictions, 2,
-                           function(X) {
-                             colMeans((X > matrix(rep(z, each = length(X)),
-                                                  nrow = length(X), 
-                                                  ncol = length(z)))*NB_z)
-                             })
-  colnames(NB_models_lasso) <- paste("NB_model_", colnames(NB_models_lasso),
-                                     sep = "")
-  NB_lasso <- dplyr::bind_cols(NB_models_lasso,
-                               "NB_max" = NB_max,
-                               "NB_all" = NB_all,
-                               "Z" = z) %>%
-    dplyr::mutate(dplyr::across(starts_with("NB_model"),
-                                function(X){NB_max-pmax(0,X,NB_all)},
-                                .names = "{paste('EVPI_', col, sep = '')}"),
-                  "Z" = Z,
-                  .keep = "none")
-  
-  ##############################################################################
-  ##### Process results for function return
-  ##############################################################################
-  model_coef_mat <- logistic_coefs_mat %>%
-    dplyr::mutate("Model" = "Logistic",
-                  .before = "Variable") %>%
-    dplyr::bind_rows(AIC_coefs_mat %>%
-                       dplyr::mutate("Model" = "AIC",
-                                     .before = "Variable")) %>%
-    dplyr::bind_rows(lasso_coefs_mat %>%
-                       dplyr::mutate("Model" = "LASSO",
-                                     .before = "Variable"))
-  
-  EVPI <- NB_logistic %>%
-    dplyr::mutate("Model" = "Logistic",
-                  .before = "Z") %>%
-    dplyr::bind_rows(NB_AIC %>%
-                       dplyr::mutate("Model" = "AIC",
-                                     .before = "Z")) %>%
-    dplyr::bind_rows(NB_lasso %>%
-                       dplyr::mutate("Model" = "LASSO",
-                                     .before = "Z"))
-  
   return(list("model_coef_mat" = model_coef_mat,
               "predictive_performance" = predictive_performance,
               "EVPI" = EVPI))
@@ -402,47 +520,54 @@ imputation_fnc <- function(df) {
                                 .fns = ~ifelse(is.na(.), mean(., na.rm = T), .)))
   
   #Regression imputation of missing data:
-  imp <- mice::mice(df, m = 1, maxit = 0)
-  predmat <- imp$predictorMatrix
+  RI_imp <- mice::mice(df, m = 1, maxit = 0)
+  predmat <- RI_imp$predictorMatrix
+  predmat["ID", ] <- predmat[, "ID"] <- 0
   predmat["True_Pi", ] <- predmat[, "True_Pi"] <- 0
   predmat["Y", ] <- predmat[, "Y"] <- 0
-  imp <- mice::mice(df, 
-                    m = 1, 
-                    method = "norm.predict", 
-                    predictorMatrix = predmat,
-                    maxit = 15,
-                    printFlag = 0)
-  RI_df <- mice::complete(imp) %>%
+  RI_imp <- mice::mice(df, 
+                       m = 1, 
+                       method = "norm.predict", 
+                       predictorMatrix = predmat,
+                       maxit = 15,
+                       printFlag = 0)
+  RI_df <- mice::complete(RI_imp) %>%
     dplyr::select("Y", tidyr::starts_with("X"))
   
   #Multiple imputation of missing data:
-  imp <- mice::mice(df, m = 20, maxit = 0)
-  predmat <- imp$predictorMatrix
+  MI_imp <- mice::mice(df, m = 20, maxit = 0)
+  predmat <- MI_imp$predictorMatrix
+  predmat["ID", ] <- predmat[, "ID"] <- 0
   predmat["True_Pi", ] <- predmat[, "True_Pi"] <- 0
-  MI <- mice::mice(df, 
-                   m = 20, 
-                   method = "norm", 
-                   predictorMatrix = predmat,
-                   maxit = 15,
-                   printFlag = 0)
+  MI_imp <- mice::mice(df, 
+                       m = 20, 
+                       method = "norm", 
+                       predictorMatrix = predmat,
+                       maxit = 15,
+                       printFlag = 0)
   
   # Random forest imputation
   predmat <- missForestPredict::create_predictor_matrix(df)
+  predmat["ID", ] <- predmat[, "ID"] <- 0
   predmat["True_Pi", ] <- predmat[, "True_Pi"] <- 0
   predmat["Y", ] <- predmat[, "Y"] <- 0
   RF_imputation <- missForestPredict::missForest(df,
-                                                 save_models = FALSE,
+                                                 save_models = TRUE,
                                                  predictor_matrix = predmat,
                                                  num.trees = 200,
                                                  num.threads = 2,
                                                  verbose = FALSE)
-  RF_df <- RF_imputation$ximp
+  RF_df <- RF_imputation$ximp %>%
+    dplyr::select("Y", tidyr::starts_with("X"))
                          
   return(list("CCA" = CCA_df,
               "MeanImpute" = MeanImpute_df,
               "RI" = RI_df,
-              "MI" = MI,
-              "RF" = RF_df))
+              "MI" = MI_imp,
+              "RF" = RF_df,
+              
+              "RI_impmodels" = RI_imp,
+              "RF_impmodels" = RF_imputation))
 }
 
 ####----------------------------------------------------------------------------
@@ -526,31 +651,123 @@ model_fit_fnc <- function(df,
 ####----------------------------------------------------------------------------
 ## Predictive performance function
 ####----------------------------------------------------------------------------
-performance_fnc <- function(outcome, prediction,
-                            true_model_performance) {
-  library(predRupdate)
-  performance <- predRupdate::pred_val_probs(binary_outcome = outcome,
-                                             Prob = prediction,
-                                             cal_plot = FALSE)
-  data.frame("OE" = performance$OE_ratio,
-             "CalInt" = performance$CalInt,
-             "CalSlope" = performance$CalSlope,
-             "AUC" = performance$AUC) %>%
-    dplyr::mutate("OE_degradation" = OE - true_model_performance$OE_ratio,
-                  "CalInt_degradation" = CalInt - true_model_performance$CalInt,
-                  "CalSlope_degradation" = CalSlope - true_model_performance$CalSlope,
-                  "AUC_degradation" = AUC - true_model_performance$AUC)
+predictive_performance_fnc <- function(model_info, 
+                                       df,
+                                       true_model_performance,
+                                       z,
+                                       NB_z,
+                                       NB_all,
+                                       NB_max) {
+  if(mice::is.mids(df)) {
+    
+    MI_long <- mice::complete(df, action = "long")
+    
+    coef_vals <- model_info$Estimate
+    predictions <- MI_long %>% 
+      dplyr::group_by(.imp) %>% 
+      tidyr::nest() %>%
+      dplyr::mutate("DM" = map(data, 
+                               function(X){
+                                 cbind(1, X %>% 
+                                         dplyr::select(tidyr::starts_with("X")) %>% 
+                                         data.matrix())
+                               })) %>%
+      dplyr::mutate("Pi" = map(DM,
+                               function(X){
+                                 1 / (1 + exp(-as.numeric(X %*% coef_vals)))
+                               })) %>% 
+      tidyr::unnest(cols = c(".imp", "data", "Pi")) %>% 
+      dplyr::select(.imp, ID, Y, Pi)
+    
+    performance <- predictions %>%
+      dplyr::group_by(.imp) %>%
+      tidyr::nest() %>%
+      dplyr::mutate("Performance" = purrr::map(data, 
+                                               function(X) {
+                                                 performance <- predRupdate::pred_val_probs(binary_outcome = X$Y,
+                                                                                            Prob = X$Pi,
+                                                                                            cal_plot = FALSE)
+                                                 performance <- data.frame("OE" = performance$OE_ratio,
+                                                                           "CalInt" = performance$CalInt,
+                                                                           "CalSlope" = performance$CalSlope,
+                                                                           "AUC" = performance$AUC) %>%
+                                                   dplyr::mutate("OE_degradation" = OE - true_model_performance$OE_ratio,
+                                                                 "CalInt_degradation" = CalInt - true_model_performance$CalInt,
+                                                                 "CalSlope_degradation" = CalSlope - true_model_performance$CalSlope,
+                                                                 "AUC_degradation" = AUC - true_model_performance$AUC)
+                                               })) %>%
+      dplyr::select(-data) %>%
+      tidyr::unnest(cols = c(".imp", "Performance")) %>%
+      dplyr::ungroup() %>%
+      dplyr::summarise(dplyr::across(OE:AUC_degradation,
+                                     ~mean(.)))
+    
+    EVPI <- predictions %>%
+      dplyr::group_by(.imp) %>%
+      tidyr::nest() %>%
+      dplyr::mutate("EVPI" = purrr::map(data, 
+                                        function(X,
+                                                 NB_max,
+                                                 NB_all,
+                                                 z) {
+                                          NB_model <- colMeans((X$Pi > matrix(rep(z, each = length(X$Pi)),
+                                                                              nrow = length(X$Pi), 
+                                                                              ncol = length(z)))*NB_z)
+                                          EVPI <- dplyr::bind_cols("NB_model" = NB_model,
+                                                                   "NB_max" = NB_max,
+                                                                   "NB_all" = NB_all,
+                                                                   "Z" = z) %>%
+                                            dplyr::mutate("EVPI" = NB_max-pmax(0,NB_model,NB_all),
+                                                          "REVPI" = 100*((pmax(0,NB_model,NB_all) - pmax(0,NB_all))/
+                                                                           (NB_max - pmax(0,NB_all))),
+                                                          "Z" = Z,
+                                                          .keep = "none") 
+                                        },
+                                        NB_max = NB_max,
+                                        NB_all = NB_all,
+                                        z = z)) %>%
+      dplyr::select(-data) %>%
+      tidyr::unnest(cols = c(".imp", "EVPI")) %>%
+      dplyr::group_by(Z) %>%
+      dplyr::summarise(dplyr::across(c(EVPI, REVPI),
+                                     ~mean(.)))
+    
+  } else {
+    coef_vals <- model_info$Estimate
+    DM <- cbind(1, df %>% 
+                  dplyr::select(tidyr::starts_with("X")) %>% 
+                  data.matrix())
+    predictions <- 1 / (1 + exp(-as.numeric(DM %*% coef_vals)))
+    
+    performance <- predRupdate::pred_val_probs(binary_outcome = df$Y,
+                                               Prob = predictions,
+                                               cal_plot = FALSE)
+    performance <- data.frame("OE" = performance$OE_ratio,
+                              "CalInt" = performance$CalInt,
+                              "CalSlope" = performance$CalSlope,
+                              "AUC" = performance$AUC) %>%
+      dplyr::mutate("OE_degradation" = OE - true_model_performance$OE_ratio,
+                    "CalInt_degradation" = CalInt - true_model_performance$CalInt,
+                    "CalSlope_degradation" = CalSlope - true_model_performance$CalSlope,
+                    "AUC_degradation" = AUC - true_model_performance$AUC)
+    
+    NB_model <- colMeans((predictions > matrix(rep(z, each = length(predictions)),
+                                               nrow = length(predictions), 
+                                               ncol = length(z)))*NB_z)
+    EVPI <- dplyr::bind_cols("NB_model" = NB_model,
+                             "NB_max" = NB_max,
+                             "NB_all" = NB_all,
+                             "Z" = z) %>%
+      dplyr::mutate("EVPI" = NB_max-pmax(0,NB_model,NB_all),
+                    "REVPI" = 100*((pmax(0,NB_model,NB_all) - pmax(0,NB_all))/
+                                     (NB_max - pmax(0,NB_all))),
+                    "Z" = Z,
+                    .keep = "none") 
+    
+  }
+  return(list("performance" = performance,
+              "EVPI" = EVPI))
 }
 
-####----------------------------------------------------------------------------
-## util functions
-####----------------------------------------------------------------------------
-expit_fnc <- function(coefs, df) {
-  DM <- cbind(1, df %>% 
-                dplyr::select(tidyr::starts_with("X")) %>% 
-                data.matrix())
-  
-  Estimate <- coefs$Estimate
-  
-  1 / (1 + exp(-as.numeric(DM %*% Estimate)))
-}
+
+
