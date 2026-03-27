@@ -49,6 +49,7 @@ table(SampleSizeInfo$N_dev)
 ####----------------------------------------------------------------------------
 overfitting_fnc <- function(predictiveperformance,
                             simulation_paramaters,
+                            ReferenceModelPerformance,
                             missingnessmech = c("MAR", "MNAR"),
                             VariableScenario = c("SomeNoiseVariables",
                                                  "NoNoiseVariables"),
@@ -127,11 +128,16 @@ overfitting_fnc <- function(predictiveperformance,
                                                                     "RF",
                                                                     "MI")),
                                                            "Complete Case Analysis" = "CCA",
-                                                           "Fully Observed" = "FullyObserved",
+                                                           "Fully Observed (0% missing data)" = "FullyObserved",
                                                            "Mean Imputation" = "MeanImpute",
                                                            "Multiple Imputation" = "MI",
                                                            "Random Forest Imputation" = "RF",
                                                            "Single Regression Imputation" = "RI")) %>%
+    dplyr::left_join(ReferenceModelPerformance %>%
+                       dplyr::mutate(Scenario = stringr::str_remove(Scenario, "scenario_"),
+                                     Scenario = as.numeric(Scenario)) %>%
+                       dplyr::select(Scenario, "TrueCalSlope" = CalSlope),
+                     by = "Scenario") %>%
     ggplot(aes(x = multipliers, y = CalSlope, 
                group = DevelopmentImputationMethod,
                colour = DevelopmentImputationMethod)) +
@@ -141,7 +147,7 @@ overfitting_fnc <- function(predictiveperformance,
     theme_bw(base_size = 12) +
     theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
           legend.title=element_blank(),
-          legend.position = "top")
+          legend.position = "top") 
   
   ImputedTargetPlot <- predictiveperformance_subset %>%
     dplyr::filter(IPDImputationMethod == "Imputed Target Population") %>%
@@ -171,11 +177,16 @@ overfitting_fnc <- function(predictiveperformance,
                                                                     "RF",
                                                                     "MI")),
                                                            "Complete Case Analysis" = "CCA",
-                                                           "Fully Observed" = "FullyObserved",
+                                                           "Fully Observed  (0% missing data)" = "FullyObserved",
                                                            "Mean Imputation" = "MeanImpute",
                                                            "Multiple Imputation" = "MI",
                                                            "Random Forest Imputation" = "RF",
                                                            "Single Regression Imputation" = "RI")) %>%
+    dplyr::left_join(ReferenceModelPerformance %>%
+                       dplyr::mutate(Scenario = stringr::str_remove(Scenario, "scenario_"),
+                                     Scenario = as.numeric(Scenario)) %>%
+                       dplyr::select(Scenario, "TrueCalSlope" = CalSlope),
+                     by = "Scenario") %>%
     ggplot(aes(x = multipliers, y = CalSlope, 
                group = DevelopmentImputationMethod,
                colour = DevelopmentImputationMethod)) +
@@ -185,15 +196,21 @@ overfitting_fnc <- function(predictiveperformance,
     theme_bw(base_size = 12) +
     theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
           legend.title=element_blank(),
-          legend.position = "top")
+          legend.position = "top") 
   
   if(metric == "median") {
     FullyObservedPlot <- FullyObservedPlot +
+      geom_line(aes(x = multipliers, y = TrueCalSlope, 
+                    group = "Reference Model",
+                    colour = "Reference Model")) +
       geom_hline(yintercept = 0.9, linetype = "dotted") +
       geom_hline(yintercept = 1, linetype = "dashed") +
-      ylab("Calibration Slope")
+      ylab("Calibration Slope") 
     
     ImputedTargetPlot <- ImputedTargetPlot +
+      geom_line(aes(x = multipliers, y = TrueCalSlope, 
+                    group = "Reference Model",
+                    colour = "Reference Model")) +
       geom_hline(yintercept = 0.9, linetype = "dotted") +
       geom_hline(yintercept = 1, linetype = "dashed") +
       ylab("Calibration Slope")
@@ -205,8 +222,12 @@ overfitting_fnc <- function(predictiveperformance,
       ylab("Prob(Calibration Slope between 0.9 and 1.1)")
   }
   
-  ggpubr::ggarrange(FullyObservedPlot,
-                    ImputedTargetPlot,
+  ggpubr::ggarrange(FullyObservedPlot +
+                      scale_color_manual(values = c("#E69F00", "#56B4E9", "#009E73", "#F0E442", 
+                                                    "#0072B2", "#D55E00", "#CC79A7")),
+                    ImputedTargetPlot +
+                      scale_color_manual(values = c("#E69F00", "#56B4E9", "#009E73", "#F0E442", 
+                                                    "#0072B2", "#D55E00", "#CC79A7")),
                     common.legend = TRUE,
                     labels = c("A", "B"))
 }
@@ -214,11 +235,13 @@ overfitting_fnc <- function(predictiveperformance,
 
 
 ####----------------------------------------------------------------------------
-## Function to plot degradation in performance due to missingness (step 5.5)
+## Function to plot degradation in performance
 ####----------------------------------------------------------------------------
 performancedegradation_fnc <- function(predictiveperformance,
                                        simulation_paramaters,
                                        DGM_performance,
+                                       TargetImputationMethod = c("Fully Observed Target Population",
+                                                                  "Imputed Target Population"),
                                        missingnessmech = c("MAR", "MNAR"),
                                        VariableScenario = c("SomeNoiseVariables",
                                                             "NoNoiseVariables"),
@@ -229,6 +252,7 @@ performancedegradation_fnc <- function(predictiveperformance,
   missingnessmech <- as.character(match.arg(missingnessmech))
   VariableScenario <- as.character(match.arg(VariableScenario))
   modelname <- as.character(match.arg(modelname))
+  TargetImputationMethod <- as.character(match.arg(TargetImputationMethod))
   
   predictiveperformance_subset <- predictiveperformance %>%
     dplyr::left_join(simulation_paramaters, by = "Scenario")  %>%
@@ -246,112 +270,56 @@ performancedegradation_fnc <- function(predictiveperformance,
                                                "Fully Observed Target Population",
                                                "Imputed Target Population"))
   
-  
-  ## Summarise posterior distribution of fully observed CPM within the fully
-  ## observed target population
-  FullyObservedCPM_FullyObservedTarget <- predictiveperformance_subset %>%
-    dplyr::filter(DevelopmentImputationMethod == "FullyObserved",
-                  IPDImputationMethod == "Fully Observed Target Population") %>%
-    dplyr::select(Scenario, ModellingMethod,
-                  DevelopmentImputationMethod, IPDImputationMethod,
-                  OE:AUC,
-                  rho_X,
-                  prop_missing,
-                  multipliers)
-  
   ## Performance of the reference model within the fully observed target
   ## population Note: this is also the performance of the reference model within
   ## the imputed target population, given the design of the simulation (since
   ## true risks are the same and there is no missing outcomes so imputed target
   ## population outcomes are the same as the fully observed target outcomes)
-  RefModel_FullyObservedTarget <- DGM_performance %>%
+  RefModel_Performance <- DGM_performance %>%
     dplyr::mutate(Scenario = as.numeric(str_remove(Scenario, "scenario_"))) %>%
     dplyr::arrange(Scenario)
   
-  RefModel_ImputedTarget <- RefModel_FullyObservedTarget
   
-  ## Summarise posterior distribution of developed CPM within the imputed
-  ## target population
-  CPM_ImputedTarget <- predictiveperformance_subset %>%
-    dplyr::filter(DevelopmentImputationMethod != "FullyObserved",
-                  IPDImputationMethod == "Imputed Target Population") %>%
+  ## Summarise posterior distribution of developed CPM within the specified
+  ## target population and merge the true (reference) model performance with the 
+  ## performance of each CPM
+  predictiveperformance_subset %>%
+    dplyr::filter(IPDImputationMethod == TargetImputationMethod) %>%
     dplyr::select(Scenario, ModellingMethod,
                   DevelopmentImputationMethod, IPDImputationMethod,
                   OE:AUC,
                   rho_X,
                   prop_missing,
                   multipliers) %>%
-    dplyr::bind_rows(predictiveperformance_subset %>%
-                       dplyr::filter(DevelopmentImputationMethod == "CCA",
-                                     IPDImputationMethod == "Fully Observed Target Population") %>%
-                       dplyr::mutate(IPDImputationMethod = "Imputed Target Population") %>%
-                       dplyr::select(Scenario, ModellingMethod,
-                                     DevelopmentImputationMethod, IPDImputationMethod,
-                                     OE:AUC,
-                                     rho_X,
-                                     prop_missing,
-                                     multipliers)) %>%
-    dplyr::arrange(Scenario)
-  
-  FullyObservedCPM_Degradation <- FullyObservedCPM_FullyObservedTarget %>%
-    dplyr::left_join(RefModel_FullyObservedTarget %>%
-                       dplyr::rename("True_OE" = "OE",
-                                     "True_CalInt" = "CalInt",
-                                     "True_CalSlope" = "CalSlope",
-                                     "True_AUC" = "AUC"),
-                     by = "Scenario") %>%
-    dplyr::mutate("FullyObserved_OE_Degradation" = True_OE - OE,
-                  "FullyObserved_CalInt_Degradation" = True_CalInt - CalInt,
-                  "FullyObserved_CalSlope_Degradation" = True_CalSlope - CalSlope,
-                  "FullyObserved_AUC_Degradation" = True_AUC - AUC) %>%
-    dplyr::select(Scenario,
-                  prop_missing, multipliers, rho_X,
-                  tidyr::ends_with("_Degradation"))
-  
-  CPM_Degradation <- CPM_ImputedTarget %>%
-    dplyr::left_join(RefModel_ImputedTarget %>%
-                       dplyr::rename("True_OE" = "OE",
-                                     "True_CalInt" = "CalInt",
-                                     "True_CalSlope" = "CalSlope",
-                                     "True_AUC" = "AUC"),
-                     by = "Scenario") %>%
+    left_join(RefModel_Performance %>%
+                dplyr::rename("True_OE" = "OE",
+                              "True_CalInt" = "CalInt",
+                              "True_CalSlope" = "CalSlope",
+                              "True_AUC" = "AUC"),
+              by = "Scenario") %>%
     dplyr::mutate("OE_Degradation" = True_OE - OE,
                   "CalInt_Degradation" = True_CalInt - CalInt,
                   "CalSlope_Degradation" = True_CalSlope - CalSlope,
                   "AUC_Degradation" = True_AUC - AUC) %>%
     dplyr::select(Scenario, DevelopmentImputationMethod,
                   prop_missing, multipliers, rho_X,
-                  tidyr::ends_with("_Degradation"))
-  
-  
-  DegredationDueMissingness <- CPM_Degradation %>%
-    dplyr::left_join(FullyObservedCPM_Degradation,
-                     by = c("Scenario", "prop_missing", "multipliers", "rho_X")) %>%
-    dplyr::mutate("OE_MissingnessDegradation" = FullyObserved_OE_Degradation - OE_Degradation, 
-                  "CalInt_MissingnessDegradation" = FullyObserved_CalInt_Degradation - CalInt_Degradation,
-                  "CalSlope_MissingnessDegradation" = FullyObserved_CalSlope_Degradation - CalSlope_Degradation,
-                  "AUC_MissingnessDegradation" = FullyObserved_AUC_Degradation - AUC_Degradation) %>%
-    dplyr::select(DevelopmentImputationMethod, 
-                  prop_missing,
-                  multipliers,
-                  rho_X,
-                  tidyr::ends_with("_MissingnessDegradation")) %>%
-    tidyr::pivot_longer(cols = tidyr::ends_with("_MissingnessDegradation")) %>%
+                  tidyr::ends_with("_Degradation")) %>%
+    tidyr::pivot_longer(cols = tidyr::ends_with("_Degradation")) %>%
     tidyr::separate_wider_delim(name, delim = "_", names = c("Metric", "name")) %>%
-    dplyr::select(-name)
-  
-  DegredationDueMissingness %>%
+    dplyr::select(-name) %>%
     dplyr::mutate(prop_missing = factor(paste((prop_missing*100), 
                                               "%", " Missing", 
                                               sep = "")),
                   
                   DevelopmentImputationMethod = fct_recode(factor(DevelopmentImputationMethod,
-                                                                  c("CCA",
+                                                                  c("FullyObserved",
+                                                                    "CCA",
                                                                     "MeanImpute",
                                                                     "RI",
                                                                     "RF",
                                                                     "MI")),
                                                            "Complete Case Analysis" = "CCA",
+                                                           "Fully Observed (0% missing data)" = "FullyObserved",
                                                            "Mean Imputation" = "MeanImpute",
                                                            "Multiple Imputation" = "MI",
                                                            "Random Forest Imputation" = "RF",
@@ -369,16 +337,19 @@ performancedegradation_fnc <- function(predictiveperformance,
     ggplot(aes(x = multipliers, y = value, 
                group = DevelopmentImputationMethod,
                colour = DevelopmentImputationMethod)) +
-    facet_grid(prop_missing~Metric) +
+    facet_wrap(prop_missing~Metric, scales = "free_y") +
     geom_line() +
     geom_hline(yintercept = 0, linetype = "dotted") +
-    ylab("Model Degradation due to Missing Data") +
+    ylab("Model Degradation\n (Reference Model Performance - CPM Performance)") +
     xlab(expression(paste("Development Sample Size Relative to ", N[min], sep=""))) +
     theme_bw(base_size = 12) +
     theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
           legend.title=element_blank(),
-          legend.position = "top")
+          legend.position = "top") +
+    scale_color_manual(values = c("#E69F00", "#56B4E9", "#009E73", "#F0E442", 
+                                  "#0072B2", "#D55E00", "#CC79A7"))
 }
+
 
 
 ####----------------------------------------------------------------------------
@@ -450,7 +421,9 @@ EVPI_fnc <- function(EVPI_df,
       theme_bw(base_size = 12) +
       theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
             legend.title=element_blank(),
-            legend.position = "top")
+            legend.position = "top") +
+    scale_color_manual(values = c("#E69F00", "#56B4E9", "#009E73", "#F0E442", 
+                                  "#0072B2", "#D55E00", "#CC79A7"))
 }
 
 
@@ -462,6 +435,7 @@ EVPI_fnc <- function(EVPI_df,
 #Figure 1
 overfitting_fnc(predictiveperformance = prediction_results,
                 simulation_paramaters = sims_parameters,
+                ReferenceModelPerformance = True_mod_performance,
                 missingnessmech = "MAR",
                 VariableScenario = "NoNoiseVariables",
                 rhovalue =  0.5,
@@ -471,6 +445,7 @@ ggsave(filename = here::here("Manuscript", "Fig1.tiff"), dpi = 300)
 #Supplementary Figure 1
 overfitting_fnc(predictiveperformance = prediction_results,
                 simulation_paramaters = sims_parameters,
+                ReferenceModelPerformance = True_mod_performance,
                 missingnessmech = "MNAR",
                 VariableScenario = "NoNoiseVariables",
                 rhovalue =  0.5,
@@ -479,6 +454,7 @@ overfitting_fnc(predictiveperformance = prediction_results,
 #Figure 2
 overfitting_fnc(predictiveperformance = prediction_results,
                 simulation_paramaters = sims_parameters,
+                ReferenceModelPerformance = True_mod_performance,
                 missingnessmech = "MAR",
                 VariableScenario = "NoNoiseVariables",
                 rhovalue =  0.5,
@@ -486,22 +462,22 @@ overfitting_fnc(predictiveperformance = prediction_results,
 ggsave(filename = here::here("Manuscript", "Fig2.tiff"), dpi = 300)
 
 #Supplementary Figure 2
-ggpubr::ggarrange(performancedegradation_fnc(predictiveperformance = prediction_results,
-                                             simulation_paramaters = sims_parameters,
-                                             DGM_performance = True_mod_performance,
-                                             missingnessmech = "MAR",
-                                             VariableScenario = "NoNoiseVariables",
-                                             modelname = "logistic",
-                                             rhovalue = 0.5),
-                  performancedegradation_fnc(predictiveperformance = prediction_results,
-                                             simulation_paramaters = sims_parameters,
-                                             DGM_performance = True_mod_performance,
-                                             missingnessmech = "MNAR",
-                                             VariableScenario = "NoNoiseVariables",
-                                             modelname = "logistic",
-                                             rhovalue = 0.5),
-                  common.legend = TRUE,
-                  labels = c("A", "B"))
+performancedegradation_fnc(predictiveperformance = prediction_results,
+                           simulation_paramaters = sims_parameters,
+                           DGM_performance = True_mod_performance,
+                           TargetImputationMethod = "Fully Observed Target Population",
+                           missingnessmech = "MAR",
+                           VariableScenario = "NoNoiseVariables",
+                           modelname = "logistic",
+                           rhovalue = 0.5)
+performancedegradation_fnc(predictiveperformance = prediction_results,
+                           simulation_paramaters = sims_parameters,
+                           DGM_performance = True_mod_performance,
+                           TargetImputationMethod = "Fully Observed Target Population",
+                           missingnessmech = "MNAR",
+                           VariableScenario = "NoNoiseVariables",
+                           modelname = "logistic",
+                           rhovalue = 0.5)
 
 #Figure 3
 ggpubr::ggarrange(EVPI_fnc(EVPI_df = EVPI,
@@ -526,6 +502,7 @@ ggsave(filename = here::here("Manuscript", "Fig3.tiff"), dpi = 300)
 #Supplementary Figure 3
 overfitting_fnc(predictiveperformance = prediction_results,
                 simulation_paramaters = sims_parameters,
+                ReferenceModelPerformance = True_mod_performance,
                 missingnessmech = "MNAR",
                 VariableScenario = "SomeNoiseVariables",
                 rhovalue =  0.5,
@@ -534,6 +511,7 @@ overfitting_fnc(predictiveperformance = prediction_results,
 #Supplementary Figure 4
 overfitting_fnc(predictiveperformance = prediction_results,
                 simulation_paramaters = sims_parameters,
+                ReferenceModelPerformance = True_mod_performance,
                 missingnessmech = "MNAR",
                 VariableScenario = "SomeNoiseVariables",
                 rhovalue =  0.5,
