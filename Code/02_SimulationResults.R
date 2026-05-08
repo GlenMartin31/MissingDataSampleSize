@@ -330,7 +330,7 @@ performancedegradation_fnc <- function(predictiveperformance,
                                                "CalInt",
                                                "CalSlope",
                                                "AUC")),
-                                      "AUC" = "AUC",
+                                      "C-Statistic" = "AUC",
                                       "Calibration Intercept" = "CalInt",
                                       "Calibration Slope" = "CalSlope",
                                       "Observed:Expected Ratio" = "OE")) %>%
@@ -432,7 +432,7 @@ EVPI_fnc <- function(EVPI_df,
 ## Create the plots for the manuscript
 ####----------------------------------------------------------------------------
 
-#Figure 1
+#Figure 2
 overfitting_fnc(predictiveperformance = prediction_results,
                 simulation_paramaters = sims_parameters,
                 ReferenceModelPerformance = True_mod_performance,
@@ -440,7 +440,7 @@ overfitting_fnc(predictiveperformance = prediction_results,
                 VariableScenario = "NoNoiseVariables",
                 rhovalue =  0.5,
                 metric = "median")
-ggsave(filename = here::here("Manuscript", "Fig1.tiff"), dpi = 300)
+ggsave(filename = here::here("Manuscript", "Fig2.tiff"), dpi = 300)
 
 #Supplementary Figure 1
 overfitting_fnc(predictiveperformance = prediction_results,
@@ -451,7 +451,7 @@ overfitting_fnc(predictiveperformance = prediction_results,
                 rhovalue =  0.5,
                 metric = "median")
 
-#Figure 2
+#Figure 3
 overfitting_fnc(predictiveperformance = prediction_results,
                 simulation_paramaters = sims_parameters,
                 ReferenceModelPerformance = True_mod_performance,
@@ -459,7 +459,7 @@ overfitting_fnc(predictiveperformance = prediction_results,
                 VariableScenario = "NoNoiseVariables",
                 rhovalue =  0.5,
                 metric = "PosteriorProb0.9to1.1")
-ggsave(filename = here::here("Manuscript", "Fig2.tiff"), dpi = 300)
+ggsave(filename = here::here("Manuscript", "Fig3.tiff"), dpi = 300)
 
 #Supplementary Figure 2
 performancedegradation_fnc(predictiveperformance = prediction_results,
@@ -479,7 +479,7 @@ performancedegradation_fnc(predictiveperformance = prediction_results,
                            modelname = "logistic",
                            rhovalue = 0.5)
 
-#Figure 3
+#Figure 4
 ggpubr::ggarrange(EVPI_fnc(EVPI_df = EVPI,
                            simulation_paramaters = sims_parameters,
                            missingnessmech = "MAR",
@@ -496,7 +496,7 @@ ggpubr::ggarrange(EVPI_fnc(EVPI_df = EVPI,
                            metric = "EVPI"),
                   common.legend = TRUE,
                   labels = c("A", "B"))
-ggsave(filename = here::here("Manuscript", "Fig3.tiff"), dpi = 300)
+ggsave(filename = here::here("Manuscript", "Fig4.tiff"), dpi = 300)
 
 
 #Supplementary Figure 3

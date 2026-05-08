@@ -586,7 +586,7 @@ AssuranceResults <- Summarised_PracticalExample1Results %>%
 
 
 
-#Figure 4
+#Figure 5
 ggpubr::ggarrange(
   MedianPerformanceResults %>%
     dplyr::filter(name %in% c("CalSlope")) %>%
@@ -630,7 +630,7 @@ ggpubr::ggarrange(
   common.legend = TRUE,
   labels = c("A", "B")
 )
-ggsave(filename = here::here("Manuscript", "Fig4.tiff"), dpi = 300)
+ggsave(filename = here::here("Manuscript", "Fig5.tiff"), dpi = 300)
 
 
 MedianPerformanceResults %>%
@@ -640,7 +640,7 @@ MedianPerformanceResults %>%
              colour = DevDataImputationMethod)) +
   geom_line() +
   xlab("Development Dataset Sample Size") +
-  ylab("Median AUC") +
+  ylab("Median C-statistic") +
   theme_bw(base_size = 12) +
   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
         legend.title=element_blank(),

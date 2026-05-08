@@ -646,7 +646,7 @@ MedianPerformanceResults %>%
              colour = DevDataImputationMethod)) +
   geom_line() +
   xlab("Development Dataset Sample Size") +
-  ylab("Median AUC") +
+  ylab("Median C-statistic") +
   theme_bw(base_size = 12) +
   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
         legend.title=element_blank(),
